@@ -1,0 +1,6 @@
+{
+  "name": "18세 유권자의 정책 검증 청문회",
+  "description": "대한민국 18세 첫 유권자의 날카롭고 냉철한 압박 면접을 통해 후보 정책의 예산, 실현 가능성, 형평성을 철저히 검증하는 시뮬레이터",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
