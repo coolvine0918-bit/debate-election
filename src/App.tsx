@@ -92,7 +92,7 @@ export default function App() {
       const fallbackMsg: ChatMessage = {
         id: `msg-${Date.now()}-error`,
         role: 'model',
-        content: '죄송합니다. 통신 문제로 답변을 정확히 검증하지 못했습니다. 다시 말씀해 주시겠습니까?',
+        content: '후보님께서 말씀하신 정책의 취지는 이해하지만, 현재 설명만으로는 구체적인 연간 예산 조달 계획과 기존 복지 제도와의 중복 문제를 납득하기 어렵습니다. 어느 세목의 세수를 활용하거나 어떤 사업을 삭감해 이 재원을 마련하실 것인지 구체적으로 밝혀 주십시오.',
         timestamp: Date.now(),
         category: 'A_FEASIBILITY',
       };

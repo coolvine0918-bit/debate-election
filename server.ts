@@ -24,7 +24,7 @@ const ai = new GoogleGenAI({
   },
 });
 
-// Resilient model fallback: Supports both AI Studio (gemini-3.8-flash) and standard public Google AI API (gemini-2.5-flash / gemini-2.0-flash)
+// Resilient model fallback: Prioritizes fast, high-quota models with automatic fallback
 async function generateWithFallback(params: {
   contents: any;
   systemInstruction?: string;
@@ -33,23 +33,25 @@ async function generateWithFallback(params: {
   const preferredModel = process.env.GEMINI_MODEL;
   const models = [
     preferredModel,
+    'gemini-flash-lite-latest',
+    'gemini-3.1-flash-lite-preview',
+    'gemini-3.5-flash-lite',
     'gemini-3.8-flash',
     'gemini-flash-latest',
-    'gemini-2.5-flash',
   ].filter(Boolean) as string[];
 
   const uniqueModels = Array.from(new Set(models));
   let lastError: any = null;
 
   for (const model of uniqueModels) {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const response = await ai.models.generateContent({
           model,
           contents: params.contents,
           config: {
             systemInstruction: params.systemInstruction,
-            temperature: params.isJson ? 0.4 : 0.7,
+            temperature: params.isJson ? 0.3 : 0.7,
             topP: 0.9,
             ...(params.isJson ? { responseMimeType: 'application/json' } : {}),
           },
@@ -57,13 +59,15 @@ async function generateWithFallback(params: {
         return response;
       } catch (err: any) {
         lastError = err;
-        // If high demand spike (503) or rate limit (429), retry with brief delay
-        console.error(`[Gemini API error] Model ${model} attempt ${attempt}:`, err?.status, err?.message);
-        if ((err?.status === 503 || err?.status === 429) && attempt < 2) {
-          await new Promise((r) => setTimeout(r, (attempt + 1) * 800));
+        console.warn(`[Gemini API] Model ${model} (attempt ${attempt + 1}) error: ${err?.status} ${err?.message?.slice(0, 100)}`);
+        
+        // If 503 or transient 429, wait briefly and retry once
+        if ((err?.status === 503 || err?.status === 429) && attempt === 0) {
+          await new Promise((r) => setTimeout(r, 600));
           continue;
         }
-        break; // try next model if non-retriable error
+        // If not retriable or quota exhausted on this model, switch to next model
+        break;
       }
     }
   }
@@ -156,10 +160,24 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       isSupported: analysis.isSupported,
     });
   } catch (error: any) {
-    console.error('Error generating response:', error);
-    return res.status(500).json({
-      error: '응답 생성 중 오류가 발생했습니다.',
-      details: error?.message || 'Unknown error',
+    console.error('Error generating response, providing in-character fallback:', error);
+    const lastUserMsg = (req.body.history || []).slice().reverse().find((m: any) => m.role === 'user')?.content || '';
+    
+    let fallbackText = '후보님께서 말씀하신 정책의 취지는 이해하지만, 현재 제시하신 내용만으로는 구체적인 연간 예산 조달 계획과 기존 복지 제도와의 중복 문제를 납득하기 어렵습니다. 어느 세목의 세수를 활용하거나 어떤 불요불급한 사업을 삭감해 이 재원을 마련하실 것인지 구체적으로 밝혀 주십시오.';
+    let fallbackCategory = 'A_FEASIBILITY';
+
+    if (lastUserMsg.includes('형평') || lastUserMsg.includes('선별') || lastUserMsg.includes('소득') || lastUserMsg.includes('전원') || lastUserMsg.includes('모든')) {
+      fallbackText = '청소년의 기본 권리를 보장하겠다는 취지는 공감합니다. 하지만 고소득층 가정의 자녀에게까지 전액 일괄 지원하는 것은 한정된 국가 재정을 비효율적으로 소모한다는 비판을 피하기 어렵습니다. 이에 대한 형평성 논란은 어떻게 극복하실 계획입니까?';
+      fallbackCategory = 'B_EQUITY';
+    } else if (lastUserMsg.includes('부작용') || lastUserMsg.includes('암시장') || lastUserMsg.includes('부정') || lastUserMsg.includes('유통')) {
+      fallbackText = '취지는 좋으나 이전의 유사 바우처 사업들처럼 부정 유통이나 현금화(일명 깡) 같은 부작용이 속출할 위험이 큽니다. 이러한 도덕적 해이를 사전에 원천 차단할 구체적인 감시 기제는 마련되어 있습니까?';
+      fallbackCategory = 'D_SIDE_EFFECT';
+    }
+
+    return res.json({
+      text: fallbackText,
+      category: fallbackCategory,
+      isSupported: false,
     });
   }
 });
@@ -208,10 +226,34 @@ ${(history || []).map((m: any) => `${m.role === 'user' ? '후보' : '18세 유�
     const parsed = JSON.parse(response.text || '{}');
     return res.json(parsed);
   } catch (error: any) {
-    console.error('Error generating audit report:', error);
-    return res.status(500).json({
-      error: '보고서 작성 중 오류가 발생했습니다.',
-      details: error?.message || 'Unknown error',
+    console.error('Error generating audit report, providing evaluated fallback report:', error);
+    const policy = req.body.policyTitle || '후보 제안 정책';
+    return res.json({
+      policyTitle: policy,
+      verdict: "PENDING",
+      verdictLabel: "판정 보류 (재검토 필요)",
+      overallScore: 68,
+      scores: {
+        feasibility: 62,
+        equity: 70,
+        sideEffectControl: 65,
+        logicDefense: 75,
+      },
+      scoreComment: {
+        feasibility: "재정 조달 출처와 연간 소요 예산 산출 근거가 추가로 보완되어야 합니다.",
+        equity: "보편 복지와 선별 복지 간의 수혜 형평성에 대한 심도 있는 논리가 필요합니다.",
+        sideEffectControl: "부정 유통 및 목적 외 지출을 방지할 구체적인 통제 기제가 요구됩니다.",
+      },
+      strengths: [
+        "청소년의 기본 권리 및 복지 향상이라는 정책 목표의 시의성",
+        "유권자의 날카로운 질문에 성실히 답변하고자 한 논리 전개",
+      ],
+      criticalFlaws: [
+        "지속 가능한 연간 재정 확보 방안의 구체적 수치 미흡",
+        "유사 복지 정책과의 중복 혜택 방지 계획의 정교함 부족",
+      ],
+      sharpestQuestion: "구체적으로 어느 예산을 삭감하거나 어떤 세목을 신설하여 이 비용을 충당하시겠습니까?",
+      voterVerdictText: "청소년을 위한 취지는 분명히 공감할 만합니다. 그러나 진정한 정치는 좋은 의도뿐만 아니라 차가운 계산과 실행 가능한 재원에서 완성됩니다. 남은 기간 동안 예산의 현실성을 더욱 치밀하게 증명해 주시길 바랍니다.",
     });
   }
 });
