@@ -24,6 +24,53 @@ const ai = new GoogleGenAI({
   },
 });
 
+// Resilient model fallback: Supports both AI Studio (gemini-3.8-flash) and standard public Google AI API (gemini-2.5-flash / gemini-2.0-flash)
+async function generateWithFallback(params: {
+  contents: any;
+  systemInstruction?: string;
+  isJson?: boolean;
+}) {
+  const preferredModel = process.env.GEMINI_MODEL;
+  const models = [
+    preferredModel,
+    'gemini-3.8-flash',
+    'gemini-flash-latest',
+    'gemini-2.5-flash',
+  ].filter(Boolean) as string[];
+
+  const uniqueModels = Array.from(new Set(models));
+  let lastError: any = null;
+
+  for (const model of uniqueModels) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: params.contents,
+          config: {
+            systemInstruction: params.systemInstruction,
+            temperature: params.isJson ? 0.4 : 0.7,
+            topP: 0.9,
+            ...(params.isJson ? { responseMimeType: 'application/json' } : {}),
+          },
+        });
+        return response;
+      } catch (err: any) {
+        lastError = err;
+        // If high demand spike (503) or rate limit (429), retry with brief delay
+        console.error(`[Gemini API error] Model ${model} attempt ${attempt}:`, err?.status, err?.message);
+        if ((err?.status === 503 || err?.status === 429) && attempt < 2) {
+          await new Promise((r) => setTimeout(r, (attempt + 1) * 800));
+          continue;
+        }
+        break; // try next model if non-retriable error
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 const SYSTEM_INSTRUCTION = `당신은 대한민국에 거주하는 아주 논리적이고 비판적인 '18세 유권자'입니다. 생애 첫 투표를 앞두고 있으며, 현실성 없는 포퓰리즘 정책과 예산 낭비를 극도로 혐오합니다. 학생(정치인 후보)이 제안하는 정책의 논리적 허점을 찾아내 날카롭게 검증하고 압박 면접을 진행하는 것이 당신의 목표입니다.
 
 # Tone & Manner
@@ -95,14 +142,9 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       additionalInstruction += `\n[현재 청문회 진행 상황]: 이번 턴은 ${turnCount}번째 질문입니다. 학생의 방어 논리와 수치적 구체성이 충분하다면 규칙 5(조건부 지지)를 충족할 수 있으며, 여전히 수치나 대안이 미흡하다면 매섭게 꼬리 질문을 던지세요.`;
     }
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: contents,
-      config: {
-        systemInstruction: additionalInstruction,
-        temperature: 0.7,
-        topP: 0.9,
-      },
+    const response = await generateWithFallback({
+      contents,
+      systemInstruction: additionalInstruction,
     });
 
     const rawText = response.text || '';
@@ -158,13 +200,9 @@ ${(history || []).map((m: any) => `${m.role === 'user' ? '후보' : '18세 유�
   "voterVerdictText": string (18세 유권자로서의 솔직하고 차가운 최종 소회 2~3문장)
 }`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+    const response = await generateWithFallback({
       contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        temperature: 0.4,
-      },
+      isJson: true,
     });
 
     const parsed = JSON.parse(response.text || '{}');
